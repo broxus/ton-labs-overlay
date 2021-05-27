@@ -70,7 +70,7 @@ impl<T: Send + 'static> BroadcastReceiver<T> {
         let receiver = receiver.clone();
         tokio::spawn(async move {
             receiver.data.push(data);
-            while receiver.synclock.load(Ordering::Relaxed) > 0 {
+            while receiver.synclock.load(Ordering::Acquire) > 0 {
                 if let Some(subscriber) = receiver.subscribers.pop() {
                     subscriber.wait().await;
                     break;
@@ -82,10 +82,10 @@ impl<T: Send + 'static> BroadcastReceiver<T> {
     }
 
     async fn pop(&self) -> Result<T> {
-        self.synclock.fetch_add(1, Ordering::Relaxed);
+        self.synclock.fetch_add(1, Ordering::Release);
         loop {
             if let Some(data) = self.data.pop() {
-                self.synclock.fetch_sub(1, Ordering::Relaxed);
+                self.synclock.fetch_sub(1, Ordering::Release);
                 return Ok(data);
             } else {
                 let subscriber = Arc::new(tokio::sync::Barrier::new(2));
@@ -331,7 +331,7 @@ impl OverlayShard {
             }
             if let Some(transfer) = overlay_shard_recv.owned_broadcasts.get(&bcast_id_recv) {
                 if let OwnedBroadcast::RecvFec(transfer) = transfer.value() {
-                    transfer.completed.store(true, Ordering::Relaxed);
+                    transfer.completed.store(true, Ordering::Release);
                 } else {
                     log::error!(
                         target: TARGET,
@@ -722,7 +722,7 @@ impl OverlayShard {
             return Ok(());
         }
 
-        if !transfer.completed.load(Ordering::Relaxed) {
+        if !transfer.completed.load(Ordering::Acquire) {
             transfer.sender.send(bcast)?;
         }
         let neighbours = overlay_shard.neighbours.random_vec(Some(peers.other()), 5);
@@ -780,7 +780,7 @@ impl OverlayShard {
             tokio::time::sleep(Duration::from_secs(Self::TIMEOUT_BROADCAST)).await;
             overlay_shard
                 .purge_broadcasts_count
-                .fetch_add(1, Ordering::Relaxed);
+                .fetch_add(1, Ordering::Release);
             overlay_shard.purge_broadcasts.push(bcast_id);
         });
     }
@@ -1082,7 +1082,7 @@ impl OverlayNode {
             .shards
             .get(overlay_id)
             .ok_or_else(|| error!("Getting trace from unknown overlay {}", overlay_id))?;
-        Ok(shard.value().debug_trace.load(Ordering::Relaxed))
+        Ok(shard.value().debug_trace.load(Ordering::Acquire))
     }
 
     /// Get locally cached random peers
@@ -1313,11 +1313,11 @@ impl OverlayNode {
                     let mut timeout_peers = 0;
                     while Arc::strong_count(&shard) > 1 {
                         let upto = Self::MAX_BROADCAST_LOG;
-                        while shard.purge_broadcasts_count.load(Ordering::Relaxed) > upto {
+                        while shard.purge_broadcasts_count.load(Ordering::Acquire) > upto {
                             if let Some(bcast_id) = shard.purge_broadcasts.pop() {
                                 shard.owned_broadcasts.remove(&bcast_id);
                             }
-                            shard.purge_broadcasts_count.fetch_sub(1, Ordering::Relaxed);
+                            shard.purge_broadcasts_count.fetch_sub(1, Ordering::Release);
                         }
                         timeout_peers += Self::TIMEOUT_GC;
                         if timeout_peers > Self::TIMEOUT_PEERS {
